@@ -8,218 +8,228 @@ app_port: 7860
 pinned: false
 ---
 
-# Gotham Telekinesis — Backend
+<p align="center">
+  <strong>🦇 Gotham Telekinesis API</strong>
+</p>
 
-FastAPI server with JWT authentication and optional server-side hand tracking (MediaPipe + webcam).
+<p align="center">
+  FastAPI backend for authentication, health monitoring, and optional server-side hand tracking.
+</p>
 
-**Frontend repo:** [AI-Telekinesis-Simulator-frontend](https://github.com/aliashrafabbasi/AI-Telekinesis-Simulator-frontend)
+<p align="center">
+  <a href="https://fastapi.tiangolo.com"><img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI" /></a>
+  <a href="https://www.postgresql.org"><img src="https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL" /></a>
+  <a href="https://huggingface.co/spaces"><img src="https://img.shields.io/badge/Deploy-HuggingFace-FFD21E?style=flat-square&logo=huggingface&logoColor=black" alt="Hugging Face" /></a>
+  <a href="https://www.docker.com"><img src="https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker" /></a>
+</p>
 
-**Live API:** `https://aliashrafabbasi-gotham-telekinesis-api.hf.space`
+<p align="center">
+  <a href="https://github.com/aliashrafabbasi/AI-Telekinesis-Simulator-frontend"><strong>Frontend App</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://aliashrafabbasi-gotham-telekinesis-api.hf.space/health/live"><strong>Live API</strong></a>
+</p>
 
 ---
 
-## What this project does
+## Overview
 
-| Feature | Production (HF) | Local Docker |
-|---------|-----------------|--------------|
-| **Auth API** | ✅ Register, login, JWT | ✅ Same |
-| **PostgreSQL** | ✅ Neon cloud DB | ✅ Docker Postgres |
-| **Server webcam tracking** | ❌ No camera on cloud | ✅ WebSocket hand tracking |
+This repository powers the **Gotham Telekinesis** backend — a FastAPI service that provides JWT-based user authentication and, in local environments, server-side hand tracking over WebSocket.
 
-In **production**, the React frontend runs hand tracking in the browser. This backend only serves **authentication** and health checks on Hugging Face.
+| Capability | Production (HF Space) | Local (Docker) |
+|------------|:---------------------:|:--------------:|
+| User authentication | ✓ | ✓ |
+| PostgreSQL storage | ✓ (Neon) | ✓ (Docker) |
+| Server-side webcam tracking | — | ✓ |
+| Health endpoints | ✓ | ✓ |
 
-For **local development**, Docker can also run server-side camera tracking over WebSocket when the frontend uses `VITE_TRACKING_MODE=server`.
+> In production, the React frontend performs hand tracking in the browser. This API serves `/auth/*` endpoints only on Hugging Face.
+
+---
+
+## Table of Contents
+
+- [Architecture](#architecture)
+- [API Reference](#api-reference)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Deployment](#deployment)
+- [Tech Stack](#tech-stack)
 
 ---
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    subgraph Prod["Production"]
+        FE["React Frontend · Netlify"]
+        API["FastAPI · Hugging Face"]
+        DB[("Neon PostgreSQL")]
+        FE -->|"HTTPS /auth/*"| API
+        API --> DB
+    end
+
+    subgraph Local["Local Development"]
+        FE2["React · localhost:5173"]
+        API2["FastAPI · Docker"]
+        DB2[("Postgres · Docker")]
+        CAM["Webcam + MediaPipe"]
+        FE2 -->|"WebSocket"| API2
+        FE2 -->|"HTTPS /auth/*"| API2
+        API2 --> DB2
+        CAM --> API2
+    end
 ```
-Production (deployed)
-─────────────────────
-Browser (Netlify)  ──HTTPS──►  HF Space (this API)  ──►  Neon PostgreSQL
-     │                              │
-     └── hand tracking              └── /auth/* only
-         (MediaPipe in browser)
-
-Local dev (server mode)
-───────────────────────
-Browser (localhost:5173)  ──WS──►  Docker API (this repo)  ──►  Postgres
-                                        │
-                                        └── webcam + MediaPipe
-```
 
 ---
 
-## Auth API
+## API Reference
 
-| Method | Path | Body / headers |
-|--------|------|----------------|
-| POST | `/auth/register` | `{ email, username, password }` |
-| POST | `/auth/login` | `{ email, password }` |
-| GET | `/auth/me` | `Authorization: Bearer <token>` |
-| POST | `/auth/logout` | Bearer token (client clears token) |
+### Authentication
 
-Username must match `^[a-zA-Z0-9_]+$` (no spaces).
+| Method | Endpoint | Description |
+|:------:|----------|-------------|
+| `POST` | `/auth/register` | Create account — `{ email, username, password }` |
+| `POST` | `/auth/login` | Obtain JWT — `{ email, password }` |
+| `GET` | `/auth/me` | Current user — `Authorization: Bearer <token>` |
+| `POST` | `/auth/logout` | Invalidate session (client clears token) |
 
----
+Username must match `^[a-zA-Z0-9_]+$`.
 
-## WebSockets (local server mode only)
+### WebSockets *(local server mode only)*
 
-Requires `?token=<jwt>` — camera starts when an authenticated client connects:
+| Endpoint | Purpose |
+|----------|---------|
+| `/ws?token=<jwt>` | Hand position and gesture frames |
+| `/ws/preview?token=<jwt>` | JPEG camera preview stream |
 
-| Path | Purpose |
-|------|---------|
-| `/ws` | Hand control frames (position, gesture) |
-| `/ws/preview` | JPEG camera preview |
+The camera activates when an authenticated client connects.
 
-Example: `ws://127.0.0.1:7860/ws?token=...`
+### Health
 
-Not used in production browser-mode deploy.
-
----
-
-## Health
-
-| Path | Purpose |
-|------|---------|
-| `GET /health/live` | Process alive |
-| `GET /health/ready` | DB + camera readiness |
-| `GET /health` | Legacy summary |
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health/live` | Process liveness check |
+| `GET /health/ready` | Database and camera readiness |
+| `GET /health` | Legacy health summary |
 
 ---
 
-## Docker (local)
+## Quick Start
 
-### Quick start
+### Docker Compose *(recommended)*
 
 ```bash
+git clone https://github.com/aliashrafabbasi/AI-Telekinesis-Simulator.git
+cd AI-Telekinesis-Simulator
 docker compose up --build
 ```
 
-API: `http://localhost:7860`
+API available at `http://localhost:7860`
 
-### Manual run
+### Manual Setup
+
+```bash
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env        # configure JWT_SECRET and DATABASE_URL
+alembic upgrade head
+uvicorn app.main:app --reload --port 7860
+```
+
+### Verify
+
+```bash
+# Health check
+curl http://127.0.0.1:7860/health/live
+
+# Register
+curl -X POST http://127.0.0.1:7860/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"demo@gotham.com","username":"demo","password":"secret123"}'
+
+# Login
+curl -X POST http://127.0.0.1:7860/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"demo@gotham.com","password":"secret123"}'
+```
+
+---
+
+## Configuration
+
+| Variable | Description |
+|----------|-------------|
+| `ENVIRONMENT` | `development` or `production` |
+| `DATABASE_URL` | Async PostgreSQL URL — `postgresql+asyncpg://...` |
+| `JWT_SECRET` | HS256 signing key (32+ characters in production) |
+| `JWT_EXPIRE_MINUTES` | Token lifetime (default: `60`) |
+| `CORS_ORIGINS` | Comma-separated allowed frontend origins |
+| `LOG_LEVEL` | Logging verbosity — `DEBUG`, `INFO`, `WARNING` |
+
+<details>
+<summary><strong>Example — production secrets (Hugging Face)</strong></summary>
+
+| Secret | Value |
+|--------|-------|
+| `ENVIRONMENT` | `production` |
+| `DATABASE_URL` | `postgresql+asyncpg://...@neon.tech/neondb?ssl=require` |
+| `JWT_SECRET` | `<random-32-char-string>` |
+| `JWT_EXPIRE_MINUTES` | `60` |
+| `CORS_ORIGINS` | `https://your-site.netlify.app,http://localhost:5173` |
+| `LOG_LEVEL` | `INFO` |
+
+</details>
+
+---
+
+## Deployment
+
+### Hugging Face Spaces
+
+1. Create a Space with **SDK: Docker**
+2. Push this repository to the Space remote
+3. Configure secrets (see table above)
+4. Run database migrations once from your local machine:
+
+   ```bash
+   export DATABASE_URL="postgresql+asyncpg://..."
+   alembic upgrade head
+   ```
+
+5. Confirm deployment: `curl https://YOUR-SPACE.hf.space/health/live`
+
+> After deploying the frontend, update `CORS_ORIGINS` with your Netlify URL or auth requests will be blocked.
+
+### Docker (standalone)
 
 ```bash
 docker build -t gotham-telekinesis .
 
 docker run --rm -p 7860:7860 \
+  --device /dev/video0 \
   -e ENVIRONMENT=development \
   -e DATABASE_URL=postgresql+asyncpg://telekinesis:password@host.docker.internal:5432/telekinesis \
-  -e JWT_SECRET=your-local-test-secret-min-32-chars \
-  -e JWT_EXPIRE_MINUTES=60 \
-  -e CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173 \
-  -e LOG_LEVEL=INFO \
-  --device /dev/video0 \
+  -e JWT_SECRET=your-local-secret-min-32-chars \
+  -e CORS_ORIGINS=http://localhost:5173 \
   gotham-telekinesis
 ```
 
-On Linux, map the webcam with `--device /dev/video0` (or use `docker-compose.yml` which handles this).
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| Framework | FastAPI |
+| Database | PostgreSQL · SQLAlchemy async · asyncpg |
+| Migrations | Alembic |
+| Auth | JWT (HS256) |
+| Hand tracking | MediaPipe Hands · OpenCV *(local only)* |
+| Container | Docker · docker-compose |
 
 ---
 
-## Hugging Face Spaces deployment
-
-1. Create a Space with **SDK: Docker**
-2. Push this repo to the Space git remote
-3. Set **Secrets** in Space settings:
-
-| Secret | Example |
-|--------|---------|
-| `ENVIRONMENT` | `production` |
-| `DATABASE_URL` | `postgresql+asyncpg://...@...neon.tech/neondb?ssl=require` |
-| `JWT_SECRET` | Strong random string (32+ chars) |
-| `JWT_EXPIRE_MINUTES` | `60` |
-| `CORS_ORIGINS` | `https://gotham-telekinesis.netlify.app,http://localhost:5173` |
-| `LOG_LEVEL` | `INFO` |
-
-4. Run migrations against your cloud DB (once, from your machine):
-
-```bash
-export DATABASE_URL="postgresql+asyncpg://..."
-alembic upgrade head
-```
-
-5. Verify: `curl https://YOUR-SPACE.hf.space/health/live`
-
-> **Important:** Set `CORS_ORIGINS` to your Netlify URL after frontend deploy, or login will fail with CORS errors.
-
----
-
-## Local development (without Docker)
-
-### PostgreSQL
-
-```bash
-docker run --name telekinesis-postgres \
-  -e POSTGRES_USER=telekinesis \
-  -e POSTGRES_PASSWORD=password \
-  -e POSTGRES_DB=telekinesis \
-  -p 5432:5432 \
-  -d postgres:16
-```
-
-### Setup
-
-```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-# Edit .env — set JWT_SECRET to a long random string
-alembic upgrade head
-uvicorn app.main:app --reload --port 7860
-```
-
----
-
-## Environment variables
-
-| Variable | Description |
-|----------|-------------|
-| `ENVIRONMENT` | `development` or `production` |
-| `DATABASE_URL` | PostgreSQL async URL (`postgresql+asyncpg://...`) |
-| `JWT_SECRET` | HS256 signing secret (required in production) |
-| `JWT_EXPIRE_MINUTES` | Token lifetime (default `60`) |
-| `CORS_ORIGINS` | Comma-separated frontend origins |
-| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, … |
-
----
-
-## Quick test (curl)
-
-```bash
-# Register
-curl -s -X POST http://127.0.0.1:7860/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"batman@gotham.com","username":"batman","password":"secret123"}'
-
-# Login
-curl -s -X POST http://127.0.0.1:7860/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"batman@gotham.com","password":"secret123"}'
-
-# Me (replace TOKEN)
-curl -s http://127.0.0.1:7860/auth/me -H "Authorization: Bearer TOKEN"
-```
-
----
-
-## Tech stack
-
-- **FastAPI** — REST + WebSocket
-- **SQLAlchemy async** + **asyncpg** — PostgreSQL
-- **Alembic** — migrations
-- **MediaPipe Hands** — server-side tracking (local Docker only)
-- **OpenCV** — webcam capture (local Docker only)
-- **JWT (HS256)** — authentication
-
----
-
-## Production notes
-
-- Set `ENVIRONMENT=production` and a strong `JWT_SECRET`
-- Set `CORS_ORIGINS` to your real Netlify URL(s)
-- Use HTTPS everywhere; never send JWT over plain HTTP in production
-- Hand tracking in production runs in the **browser frontend**, not on this server
+<p align="center">
+  Built by <a href="https://github.com/aliashrafabbasi">aliashrafabbasi</a>
+</p>
