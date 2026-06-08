@@ -10,17 +10,88 @@ pinned: false
 
 # Gotham Telekinesis — Backend
 
-FastAPI hand-tracking server with PostgreSQL authentication.
+FastAPI server with JWT authentication and optional server-side hand tracking (MediaPipe + webcam).
 
-## Prerequisites
+**Frontend repo:** [AI-Telekinesis-Simulator-frontend](https://github.com/aliashrafabbasi/AI-Telekinesis-Simulator-frontend)
 
-- Python 3.12+ (local dev)
-- PostgreSQL (local, Docker, or Neon/Supabase for production)
-- Webcam (local dev only — cloud deploy has no server-side camera)
+**Live API:** `https://aliashrafabbasi-gotham-telekinesis-api.hf.space`
 
-## Docker (local or Hugging Face)
+---
 
-### Quick start with Docker Compose
+## What this project does
+
+| Feature | Production (HF) | Local Docker |
+|---------|-----------------|--------------|
+| **Auth API** | ✅ Register, login, JWT | ✅ Same |
+| **PostgreSQL** | ✅ Neon cloud DB | ✅ Docker Postgres |
+| **Server webcam tracking** | ❌ No camera on cloud | ✅ WebSocket hand tracking |
+
+In **production**, the React frontend runs hand tracking in the browser. This backend only serves **authentication** and health checks on Hugging Face.
+
+For **local development**, Docker can also run server-side camera tracking over WebSocket when the frontend uses `VITE_TRACKING_MODE=server`.
+
+---
+
+## Architecture
+
+```
+Production (deployed)
+─────────────────────
+Browser (Netlify)  ──HTTPS──►  HF Space (this API)  ──►  Neon PostgreSQL
+     │                              │
+     └── hand tracking              └── /auth/* only
+         (MediaPipe in browser)
+
+Local dev (server mode)
+───────────────────────
+Browser (localhost:5173)  ──WS──►  Docker API (this repo)  ──►  Postgres
+                                        │
+                                        └── webcam + MediaPipe
+```
+
+---
+
+## Auth API
+
+| Method | Path | Body / headers |
+|--------|------|----------------|
+| POST | `/auth/register` | `{ email, username, password }` |
+| POST | `/auth/login` | `{ email, password }` |
+| GET | `/auth/me` | `Authorization: Bearer <token>` |
+| POST | `/auth/logout` | Bearer token (client clears token) |
+
+Username must match `^[a-zA-Z0-9_]+$` (no spaces).
+
+---
+
+## WebSockets (local server mode only)
+
+Requires `?token=<jwt>` — camera starts when an authenticated client connects:
+
+| Path | Purpose |
+|------|---------|
+| `/ws` | Hand control frames (position, gesture) |
+| `/ws/preview` | JPEG camera preview |
+
+Example: `ws://127.0.0.1:7860/ws?token=...`
+
+Not used in production browser-mode deploy.
+
+---
+
+## Health
+
+| Path | Purpose |
+|------|---------|
+| `GET /health/live` | Process alive |
+| `GET /health/ready` | DB + camera readiness |
+| `GET /health` | Legacy summary |
+
+---
+
+## Docker (local)
+
+### Quick start
 
 ```bash
 docker compose up --build
@@ -28,7 +99,7 @@ docker compose up --build
 
 API: `http://localhost:7860`
 
-### Build and run manually
+### Manual run
 
 ```bash
 docker build -t gotham-telekinesis .
@@ -40,41 +111,45 @@ docker run --rm -p 7860:7860 \
   -e JWT_EXPIRE_MINUTES=60 \
   -e CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173 \
   -e LOG_LEVEL=INFO \
-  --add-host=host.docker.internal:host-gateway \
+  --device /dev/video0 \
   gotham-telekinesis
 ```
 
-On Linux, `--add-host=host.docker.internal:host-gateway` lets the container reach Postgres on your host.
+On Linux, map the webcam with `--device /dev/video0` (or use `docker-compose.yml` which handles this).
+
+---
 
 ## Hugging Face Spaces deployment
 
-1. Create a new Space with **SDK: Docker**
+1. Create a Space with **SDK: Docker**
 2. Push this repo to the Space git remote
 3. Set **Secrets** in Space settings:
 
-| Secret | Description |
-|--------|-------------|
+| Secret | Example |
+|--------|---------|
 | `ENVIRONMENT` | `production` |
-| `DATABASE_URL` | `postgresql+asyncpg://...` (Neon/Supabase) |
+| `DATABASE_URL` | `postgresql+asyncpg://...@...neon.tech/neondb?ssl=require` |
 | `JWT_SECRET` | Strong random string (32+ chars) |
 | `JWT_EXPIRE_MINUTES` | `60` |
-| `CORS_ORIGINS` | Your Netlify URL, e.g. `https://your-app.netlify.app` |
+| `CORS_ORIGINS` | `https://gotham-telekinesis.netlify.app,http://localhost:5173` |
 | `LOG_LEVEL` | `INFO` |
 
-4. Run migrations once against your cloud DB (locally):
+4. Run migrations against your cloud DB (once, from your machine):
 
 ```bash
 export DATABASE_URL="postgresql+asyncpg://..."
 alembic upgrade head
 ```
 
-5. Test: `curl https://YOUR-SPACE.hf.space/health/live`
+5. Verify: `curl https://YOUR-SPACE.hf.space/health/live`
 
-**Note:** Hand tracking uses a server-side webcam and will not work on Hugging Face cloud. Auth API deploys fine; move camera to the browser for full cloud gameplay.
+> **Important:** Set `CORS_ORIGINS` to your Netlify URL after frontend deploy, or login will fail with CORS errors.
+
+---
 
 ## Local development (without Docker)
 
-### PostgreSQL (Docker)
+### PostgreSQL
 
 ```bash
 docker run --name telekinesis-postgres \
@@ -94,41 +169,23 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env — set JWT_SECRET to a long random string
 alembic upgrade head
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --port 7860
 ```
 
-## Environment
+---
+
+## Environment variables
 
 | Variable | Description |
 |----------|-------------|
 | `ENVIRONMENT` | `development` or `production` |
-| `DATABASE_URL` | PostgreSQL async URL |
+| `DATABASE_URL` | PostgreSQL async URL (`postgresql+asyncpg://...`) |
 | `JWT_SECRET` | HS256 signing secret (required in production) |
-| `JWT_EXPIRE_MINUTES` | Token lifetime |
+| `JWT_EXPIRE_MINUTES` | Token lifetime (default `60`) |
 | `CORS_ORIGINS` | Comma-separated frontend origins |
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, … |
 
-## Auth API
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/auth/register` | `{ email, username, password }` |
-| POST | `/auth/login` | `{ email, password }` |
-| GET | `/auth/me` | Bearer token required |
-| POST | `/auth/logout` | Bearer token (client clears token) |
-
-WebSockets require `?token=<jwt>` (camera starts only when an authenticated client connects):
-
-- `ws://127.0.0.1:8000/ws?token=...` (local uvicorn)
-- `wss://YOUR-SPACE.hf.space/ws?token=...` (production)
-
-## Health
-
-| Path | Purpose |
-|------|---------|
-| `GET /health/live` | Process alive |
-| `GET /health/ready` | DB + camera readiness (503 if not ready) |
-| `GET /health` | Legacy summary |
+---
 
 ## Quick test (curl)
 
@@ -147,8 +204,22 @@ curl -s -X POST http://127.0.0.1:7860/auth/login \
 curl -s http://127.0.0.1:7860/auth/me -H "Authorization: Bearer TOKEN"
 ```
 
+---
+
+## Tech stack
+
+- **FastAPI** — REST + WebSocket
+- **SQLAlchemy async** + **asyncpg** — PostgreSQL
+- **Alembic** — migrations
+- **MediaPipe Hands** — server-side tracking (local Docker only)
+- **OpenCV** — webcam capture (local Docker only)
+- **JWT (HS256)** — authentication
+
+---
+
 ## Production notes
 
 - Set `ENVIRONMENT=production` and a strong `JWT_SECRET`
-- Set `CORS_ORIGINS` to your real frontend URL(s)
-- Run behind HTTPS; never expose JWT over plain HTTP in production
+- Set `CORS_ORIGINS` to your real Netlify URL(s)
+- Use HTTPS everywhere; never send JWT over plain HTTP in production
+- Hand tracking in production runs in the **browser frontend**, not on this server
