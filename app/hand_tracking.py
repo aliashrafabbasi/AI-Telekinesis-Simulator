@@ -1,18 +1,43 @@
 import logging
 import threading
 import time
+import urllib.request
 from collections import deque
+from pathlib import Path
 
 import cv2
 import mediapipe as mp
-from mediapipe.python.solutions import drawing_utils as mp_drawing
+from mediapipe.tasks import python as mp_tasks
+from mediapipe.tasks.python import vision
+from mediapipe.tasks.python.vision import HandLandmarksConnections
+from mediapipe.tasks.python.vision import drawing_utils as mp_drawing
 
 from app.config import TRACKING
 from app.schemas import HandFramePayload
 
 logger = logging.getLogger(__name__)
 
-mp_hands = mp.solutions.hands
+HAND_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+    "hand_landmarker/float16/1/hand_landmarker.task"
+)
+HAND_MODEL_PATH = Path(__file__).resolve().parent / "models" / "hand_landmarker.task"
+HAND_CONNECTIONS = HandLandmarksConnections.HAND_CONNECTIONS
+
+
+class HandLandmarks:
+    def __init__(self, landmarks):
+        self.landmark = landmarks
+
+
+def _ensure_hand_model() -> Path:
+    if HAND_MODEL_PATH.exists():
+        return HAND_MODEL_PATH
+
+    HAND_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("Downloading hand landmarker model to %s", HAND_MODEL_PATH)
+    urllib.request.urlretrieve(HAND_MODEL_URL, HAND_MODEL_PATH)
+    return HAND_MODEL_PATH
 
 WRIST = 0
 INDEX_TIP = 8
@@ -26,12 +51,17 @@ CLAP_BGR = (0, 255, 255)
 class HandTracker:
     def __init__(self, config=TRACKING):
         self.config = config
-        self._hands = mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=config.max_num_hands,
-            min_detection_confidence=config.min_detection_confidence,
+        model_path = _ensure_hand_model()
+        options = vision.HandLandmarkerOptions(
+            base_options=mp_tasks.BaseOptions(model_asset_path=str(model_path)),
+            running_mode=vision.RunningMode.VIDEO,
+            num_hands=config.max_num_hands,
+            min_hand_detection_confidence=config.min_detection_confidence,
+            min_hand_presence_confidence=config.min_tracking_confidence,
             min_tracking_confidence=config.min_tracking_confidence,
         )
+        self._hands = vision.HandLandmarker.create_from_options(options)
+        self._video_timestamp_ms = 0
         self._cap: cv2.VideoCapture | None = None
         self._last_gesture: str = "open"
         self._smooth_x: float | None = None
@@ -306,10 +336,12 @@ class HandTracker:
         h, w, _ = frame.shape
         process = cv2.resize(frame, (self.config.process_width, self.config.process_height))
         rgb = cv2.cvtColor(process, cv2.COLOR_BGR2RGB)
-        results = self._hands.process(rgb)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+        self._video_timestamp_ms += max(1, int(1000 / self.config.camera_fps))
+        detection = self._hands.detect_for_video(mp_image, self._video_timestamp_ms)
+        hand_list = [HandLandmarks(lm) for lm in detection.hand_landmarks]
 
-        if results.multi_hand_landmarks:
-            hand_list = results.multi_hand_landmarks
+        if hand_list:
             payload.hands = len(hand_list)
             payload.tracking = True
 
@@ -334,11 +366,11 @@ class HandTracker:
         else:
             self._reset_smoothing()
 
-        preview_bytes = self._maybe_encode_preview(process, results)
+        preview_bytes = self._maybe_encode_preview(process, hand_list)
 
         return payload, preview_bytes
 
-    def _maybe_encode_preview(self, process, results) -> bytes | None:
+    def _maybe_encode_preview(self, process, hand_list: list[HandLandmarks]) -> bytes | None:
         self._preview_counter += 1
         if self._preview_counter < self.config.preview_every_n_frames:
             return None
@@ -347,21 +379,21 @@ class HandTracker:
         ph, pw = process.shape[:2]
         preview_source = process
 
-        if results.multi_hand_landmarks:
+        if hand_list:
             preview_source = process.copy()
-            for hand in results.multi_hand_landmarks:
+            for hand in hand_list:
                 gesture = self._detect_gesture(hand)
                 line_color, dot_color = self._gesture_colors(gesture)
                 mp_drawing.draw_landmarks(
                     preview_source,
-                    hand,
-                    mp_hands.HAND_CONNECTIONS,
+                    hand.landmark,
+                    HAND_CONNECTIONS,
                     mp_drawing.DrawingSpec(color=line_color, thickness=1, circle_radius=1),
                     mp_drawing.DrawingSpec(color=dot_color, thickness=1, circle_radius=1),
                 )
-            if len(results.multi_hand_landmarks) >= 2:
-                p1 = self._palm_center_px(results.multi_hand_landmarks[0], pw, ph)
-                p2 = self._palm_center_px(results.multi_hand_landmarks[1], pw, ph)
+            if len(hand_list) >= 2:
+                p1 = self._palm_center_px(hand_list[0], pw, ph)
+                p2 = self._palm_center_px(hand_list[1], pw, ph)
                 cv2.line(preview_source, p1, p2, CLAP_BGR, 1)
 
         ph, pw = preview_source.shape[:2]
